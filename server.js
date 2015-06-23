@@ -26,29 +26,12 @@ var io = require('socket.io').listen(server);
 */
 
 /**
- *	Function recover all cv 10 per 10 for the main list
- *
-var findCv = function (db, callback, idBase) {
-	var collection = db.collection('cv').find( { "_id": { $lt : idBase } } ).sort( { _id: -1} ).limit(10);
-	collection.each(function(err, doc) {
-		assert.equal(err, null);
-		if (doc != null) {
-			console.log(doc);
-
-		} else {
-			callback();
-		}
-	});
-}*/
-
-/**
  *	Function recover User
  */
  var findUser = function (db, callback, login, mdp) {
-	var collection = db.collection('user').find({"login": {$eq : login}, "mdp": {$eq : mdp}});
-	collection.each(function(err, doc) {
-		assert.equal(err, null);
-		callback(doc);
+	var collection = db.collection('user').findOne({"login": {$eq : login}, "mdp": {$eq : mdp}}, function(err, item) {
+		assert.equal(null, err);
+		callback(item);
 	});
 }
 
@@ -66,10 +49,20 @@ var findFirstCv = function (db, callback) {
 }
 
 /**
- *
+ *	Function recover your own CV
  */
 var findSelfCv = function (db, callback, cv_id) {
-	var collection = db.collection('cv').find({"_id": {$eq : cv_id}});
+	var collection = db.collection('cv').findOne({"_id": {$eq : cv_id}}, function(err, item) {
+		assert.equal(null, err);
+		callback(item);
+	});
+}
+
+/**
+ *	Function recover all xp for cv details
+ */
+var findXp = function (db, callback, id_cv) {
+	var collection = db.collection('xp').find({"cv_id": { $eq : id_cv }}).limit(5);
 	collection.each(function(err, doc) {
 		assert.equal(err, null);
 		if (doc != null) {
@@ -79,11 +72,10 @@ var findSelfCv = function (db, callback, cv_id) {
 }
 
 /**
- *	Function recover all xp for cv details
+ *	Function recover only your own CV
  */
-var findXp = function (db, callback, id_cv) {
-	console.log(id_cv);
-	var collection = db.collection('xp').find({"cv_id": { $eq : id_cv }}).limit(5);
+var findSelfXP = function (db, callback, cv_id) {
+	var collection = db.collection('xp').find({"_id": {$eq : cv_id}});
 	collection.each(function(err, doc) {
 		assert.equal(err, null);
 		if (doc != null) {
@@ -96,7 +88,6 @@ var findXp = function (db, callback, id_cv) {
  *	Function recover all comp for cv details
  */
 var findComp = function (db, callback, id_cv) {
-	console.log(id_cv);
 	var collection = db.collection('comp').find({"cv_id": { $eq : id_cv }}).limit(5);
 	collection.each(function(err, doc) {
 		assert.equal(err, null);
@@ -105,6 +96,52 @@ var findComp = function (db, callback, id_cv) {
 		}
 	});
 }
+
+/**
+ *	Function Insérer un nouveau CV
+ */
+var insertCV = function(db, nom, prenom, titre, id_user, callback) {
+	var lastId = -1;
+
+	var collection = db.collection('cv').find().sort( { _id: -1} ).limit(1);
+	collection.each(function(err, doc) {
+		assert.equal(err, null);
+		if (doc != null) {
+			lastId = doc._id + 1;
+			db.collection('cv').insert({"_id": lastId, "name": nom, "fname": prenom, "title": titre, "lform": "none", "periode": "none"});
+			db.collection('user').update({"_id": id_user}, {$set: {cv_id: lastId}});
+			callback(lastId);
+		}
+	});
+}
+
+/**
+ *	Function mise à jour d'un CV existant
+ */
+var majCV = function(db, cv_id, nom, prenom, titre) {
+	var collection = db.collection('cv').update(
+		{"_id": cv_id}, 
+		{ $set: {"name": nom, "fname": prenom, "title": titre, "lform": "none", "periode": "none"}}
+	);
+}
+
+/**
+ *	Function Insérer une xp
+ */
+var insertXP = function(db, dateD, dateF, client, poste, mission, cv_id) {
+	var lastXPId;
+
+	var collection = db.collection('xp').find().sort( { _id: -1} ).limit(1);
+	collection.each(function(err, doc) {
+		assert.equal(err, null);
+		if (doc != null) {
+			lastXPId = doc._id + 1;
+			var periode = dateDiff(dateD, dateF);
+			db.collection('xp').insert({"_id": lastXPId, "periode": periode, "client": client, "poste": poste, "mission": mission, "cv_id": cv_id});
+		}
+	});
+}
+
 
 MongoClient.connect(url, function(err, bdd) {
 	db = bdd;
@@ -118,64 +155,94 @@ MongoClient.connect(url, function(err, bdd) {
 		-------------------------------------
 **/		
 
+	/*
+		LES FONCTIONS "SELF" --> RECUP DE SON PROPRE CV
+	*/
+
 function sendSelfCV(socket, cv_id) {
 	findSelfCv(db, function(data) {
-		socket.emit('newSelfCV', data._id, data.name, data.fname, data.title, data.lform, data.periode);
-		console.log("TESTEST");
+		if (data != null) {
+			socket.emit('newSelfCV', data._id, data.name, data.fname, data.title, data.lform, data.periode);
+		} else {
+			socket.emit('newSelfCV', -1, "", "", "", "", "");
+		}
+
+		socket.emit('co', socket.id_cv);
 	}, cv_id);
 }
+
+function sendSelfXP() {
+	findSelfXP(db, function (data) {
+		socket.emit('newXP', cv_id, data._id, data.periode, data.client, data.poste, data.mission);
+	}, cv_id);
+}
+
+	/*
+		LES APPELS ET LES RECEPTIONS DES SOCKETS
+	*/
 
 // On attend qu'un client se connecte
 io.sockets.on('connection', function (socket) {
 	socket.lastCvId = -2;
-	var id_cv = -1;
+	socket.id_cv = -1;
+	socket.user_id = -1;
 	console.log("Connection");
 
 	// On envoit un message de confirmation au client
 	socket.emit('connected', 'Vous êtes bien connecté !');
 	
-
 	// On écoute le client --> veut se co
 	socket.on('connect', function(login, password) {
 	    // if login and password match to something in the database
-
 		findUser(db, function(data) {
 			
 			if (data != null) {
-				id_cv = data.cv_id;
-				socket.emit('co', id_cv);
+				socket.user_id = data._id;
+
+				if (data.cv_id == null) {
+					socket.id_cv = -1;
+				} else {
+					socket.id_cv = data.cv_id;
+				}
+
+				sendSelfCV(socket, socket.id_cv);
 				
-				sendSelfCV(socket, id_cv);
-				
-		    } else {
+		    } else if (socket.user_id == -1) {
 		        socket.emit('dis', 'bad credentials');
 			}
 		}, login, password);	
 	});
 
-
 	// On écoute le client --> réclame un CV et on lui envoie les data
 	socket.on('loadCV', function (lastCvId) {
-		// BDD --> _id / name / fname / title / lform / periode
-		console.log('loadCV : ' + lastCvId);			
+		// BDD --> _id / name / fname / title / lform / periode			
 
 		if (socket.lastCvId == lastCvId) {
 
 		} else if (lastCvId == -1) {
 			findFirstCv(db, function(data) {
-				// Send BDD --> Message : Id, 		Nom, 		Prenom, 	Titre, 	Dernière formation, période
+				// Send BDD --> Message : Id, 	  Nom, 		Prenom, 	Titre, 	Dernière formation, période
 				socket.emit('newCV', data._id, data.name, data.fname, data.title, data.lform, data.periode);
 			});
 		}
 	});
 
+	socket.on('editCV', function(nom, prenom, titre) {
+		if (socket.id_cv == -1) {
+			insertCV(db, nom, prenom, titre, socket.user_id, function(data) {
+				socket.id_cv = data;
+				sendSelfCV(socket, socket.id_cv);
+			});
+		} else {
+			majCV(db, socket.id_cv, nom, prenom, titre);
+		}
+	});
 
 	// On écoute le client --> réclame les Xp d'un CV
 	socket.on('loadXP', function (cv_id) {
 
 		findXp(db, function(data) {
-			console.log("xp find : " + data);
-			// Send BDD --> Msg:  cv_id   /   _id  /   periode   /   client   /   poste   /   mission 
+			// Send BDD --> Msg / cv_id / _id  /   periode   /    client    /   poste   /   mission 
 			socket.emit('newXP', cv_id, data._id, data.periode, data.client, data.poste, data.mission);
 		}, cv_id);
 	});
@@ -184,9 +251,7 @@ io.sockets.on('connection', function (socket) {
 	socket.on('loadSkill', function (cv_id) {
 
 		findComp(db, function(data) {
-			console.log("comp find :" + cv_id);
-
-			// Send BDD --> Message : Id_Cv / Id / catégorie / environnement / xp
+			// Send BDD --> Msg  /  Id_Cv /   Id   /   catégorie   /  environnement  /   xp
 			socket.emit('newSkill', cv_id, data._id, data.categorie, data.environment, data.xp);
 		}, cv_id);
 	});
