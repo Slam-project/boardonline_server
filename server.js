@@ -48,6 +48,16 @@ var findFirstCv = function (db, callback) {
 	});
 }
 
+var findCV = function (db, callback, id) {
+	var collection = db.collection('cv').find({"_id": {$lt : id}}).sort( { _id: -1} ).limit(10);
+	collection.each(function(err, doc) {
+		assert.equal(err, null);
+		if (doc != null) {
+			callback(doc);
+		}
+	});
+}
+
 /**
  *	Function recover your own CV
  */
@@ -218,11 +228,18 @@ io.sockets.on('connection', function (socket) {
 		// BDD --> _id / name / fname / title / lform / periode			
 
 		if (socket.lastCvId == lastCvId) {
+			findCV(db, function(data) {
+				console.log(data._id);
+				// Send BDD --> Message : Id, 	  Nom, 		Prenom, 	Titre, 	Dernière formation, période
+				socket.emit('newCV', data._id, data.name, data.fname, data.title, data.lform, data.periode);
+				socket.lastCvId = data._id;
+			}, lastCvId);
 
 		} else if (lastCvId == -1) {
 			findFirstCv(db, function(data) {
 				// Send BDD --> Message : Id, 	  Nom, 		Prenom, 	Titre, 	Dernière formation, période
 				socket.emit('newCV', data._id, data.name, data.fname, data.title, data.lform, data.periode);
+				socket.lastCvId = data._id;
 			});
 		}
 	});
@@ -255,6 +272,8 @@ io.sockets.on('connection', function (socket) {
 			socket.emit('newSkill', cv_id, data._id, data.categorie, data.environment, data.xp);
 		}, cv_id);
 	});
+
+	
 
 });
 
